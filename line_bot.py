@@ -18,6 +18,13 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
+# ⭐ 匯入 API 模組
+from air_quality_api import (
+    get_current_airlink_data,
+    get_current_moenv_data,
+    format_air_quality_message
+)
+
 # 載入環境變數
 load_dotenv()
 
@@ -38,7 +45,6 @@ LIFF_URL = f"https://liff.line.me/{LIFF_ID}" if LIFF_ID else "https://your-strea
 # 初始化 LINE Bot v3
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
 
 @app.route("/")
 def home():
@@ -84,20 +90,19 @@ def home():
     </html>
     """
 
-
 @app.route("/callback", methods=['GET', 'POST'])
 def callback():
     # 處理 GET 請求（用於健康檢查或驗證）
     if request.method == 'GET':
         return 'OK', 200
-
+    
     # 處理 POST 請求
     signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
-
+    
     print(f"📨 收到 Webhook 請求")
     print(f"📋 Body: {body[:100]}...")  # 顯示前100個字元
-
+    
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -106,9 +111,8 @@ def callback():
     except Exception as e:
         print(f"❌ 處理錯誤: {e}")
         abort(500)
-
+    
     return 'OK'
-
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -117,7 +121,7 @@ def handle_message(event):
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
-
+        
         # 主選單
         if user_text in ["開始", "選單", "menu", "查詢", "hi", "hello", "你好"]:
             buttons_template = ButtonsTemplate(
@@ -138,40 +142,65 @@ def handle_message(event):
                     )
                 ]
             )
-
+            
             template_message = TemplateMessage(
                 alt_text='空氣品質查詢系統選單',
                 template=buttons_template
             )
-
+            
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[template_message]
                 )
             )
-
-        # 今日空品
-        elif user_text == "今日":
-            reply_text = """📅 今日空品
-
-🔍 即時查詢功能開發中...
-
-目前可用：
-- 輸入「選單」查看功能
-- 點擊「開啟查詢系統」使用完整功能
-
-監測站點：
-📍 AirLink: 南區上、南區下
-📍 環保署: 仁武、楠梓"""
-
+        
+        # ⭐ 今日空品（即時資料）
+        elif user_text in ["今日", "即時", "現在", "空品"]:
+            print("📡 開始取得即時空氣品質資料...")
+            
+            # 取得 API 金鑰
+            api_key = os.getenv('API_KEY', '')
+            api_secret = os.getenv('API_SECRET', '')
+            station_id = os.getenv('STATION_ID', '')
+            moenv_token = os.getenv('MOENV_API_TOKEN', '')
+            
+            # 檢查 API 設定
+            if not all([api_key, api_secret, station_id, moenv_token]):
+                reply_text = "⚠️ 系統設定不完整\n\n請稍後再試或聯絡管理員\n\n💡 您也可以點擊「開啟查詢系統」\n查看歷史資料"
+                line_bot_api.reply_message_with_http_info(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=reply_text)]
+                    )
+                )
+                return
+            
+            # 取得 AirLink 資料
+            airlink_data = get_current_airlink_data(api_key, api_secret, station_id)
+            print(f"📊 AirLink 資料: {airlink_data}")
+            
+            # 取得環保署資料
+            moenv_data = get_current_moenv_data(moenv_token)
+            print(f"📊 環保署資料: {moenv_data}")
+            
+            # 合併資料
+            all_data = {}
+            if airlink_data:
+                all_data.update(airlink_data)
+            if moenv_data:
+                all_data.update(moenv_data)
+            
+            # 格式化訊息
+            reply_text = format_air_quality_message(all_data)
+            
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[TextMessage(text=reply_text)]
                 )
             )
-
+        
         # 使用說明
         elif user_text == "說明":
             help_text = """🌫️ 空氣品質查詢系統使用說明
@@ -187,31 +216,31 @@ def handle_message(event):
 - 環保署: 仁武、楠梓
 
 📊 使用方式：
-1. 輸入「選單」查看功能
-2. 點擊「開啟查詢系統」
-3. 選擇查詢日期範圍
-4. 查看數據與圖表
+1. 輸入「今日」或「即時」查看即時空品
+2. 輸入「選單」查看功能
+3. 點擊「開啟查詢系統」查看歷史資料
+4. 選擇查詢日期範圍
+5. 查看數據與圖表
 
 💡 提示：
 在 LINE 中開啟可獲得最佳體驗！"""
-
+            
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[TextMessage(text=help_text)]
                 )
             )
-
+        
         # 其他訊息
         else:
-            reply_text = f"您說：{user_text}\n\n💡 輸入「開始」或「選單」查看功能"
+            reply_text = f"您說：{user_text}\n\n💡 輸入「開始」或「選單」查看功能\n💡 輸入「今日」查看即時空品"
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[TextMessage(text=reply_text)]
                 )
             )
-
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
@@ -222,4 +251,4 @@ if __name__ == "__main__":
     print(f"📝 Webhook URL: http://localhost:{port}/callback")
     print("=" * 50)
     print("")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(host='0.0.0.0', port=port, debug=False)
