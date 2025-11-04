@@ -52,38 +52,74 @@ def home():
     <html>
     <head>
         <title>空氣品質查詢系統</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body { 
-                font-family: Arial, sans-serif; 
-                margin: 50px; 
+                font-family: 'Microsoft JhengHei', Arial, sans-serif; 
+                margin: 0;
+                padding: 20px;
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
             }
             .container {
                 background: white;
                 color: #333;
-                padding: 30px;
-                border-radius: 15px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+                padding: 40px;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                max-width: 600px;
+                width: 100%;
             }
-            h1 { color: #667eea; }
+            h1 { 
+                color: #667eea;
+                margin: 0 0 10px 0;
+                font-size: 2em;
+            }
+            .subtitle {
+                color: #999;
+                margin: 0 0 30px 0;
+            }
             .info { 
-                background: #f0f0f0; 
-                padding: 15px; 
-                border-radius: 5px; 
+                background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                padding: 20px;
+                border-radius: 10px;
                 margin-top: 20px;
             }
-            .status { color: #28a745; font-weight: bold; }
+            .status { 
+                color: #28a745;
+                font-weight: bold;
+                font-size: 1.1em;
+            }
+            .info p {
+                margin: 10px 0;
+                line-height: 1.6;
+            }
+            .footer {
+                text-align: center;
+                margin-top: 30px;
+                color: #999;
+                font-size: 0.9em;
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🌫️ 南區案空氣品質查詢系統</h1>
+            <p class="subtitle">Air Quality Monitoring System</p>
             <div class="info">
                 <p class="status">✅ LINE Bot 正在運行中...</p>
-                <p>📝 Webhook URL: <code>/callback</code></p>
-                <p>🎯 監測站點: 仁武、楠梓、南區上、南區下</p>
-                <p>💬 請在 LINE 中傳送「開始」或「hi」測試</p>
+                <p>📝 <strong>Webhook URL:</strong> <code>/callback</code></p>
+                <p>🎯 <strong>監測站點:</strong> 仁武、楠梓、南區上、南區下</p>
+                <p>🔄 <strong>更新頻率:</strong> 每 5-15 分鐘</p>
+                <p>💬 <strong>使用方式:</strong> 請在 LINE 中傳送「開始」或「hi」測試</p>
+            </div>
+            <div class="footer">
+                <p>Powered by LINE Messaging API</p>
+                <p>© 2025 Air Quality Monitoring System</p>
             </div>
         </div>
     </body>
@@ -110,6 +146,8 @@ def callback():
         abort(400)
     except Exception as e:
         print(f"❌ 處理錯誤: {e}")
+        import traceback
+        traceback.print_exc()
         abort(500)
     
     return 'OK'
@@ -123,7 +161,7 @@ def handle_message(event):
         line_bot_api = MessagingApi(api_client)
         
         # 主選單
-        if user_text in ["開始", "選單", "menu", "查詢", "hi", "hello", "你好"]:
+        if user_text in ["開始", "選單", "menu", "查詢", "hi", "hello", "你好", "Hello", "哈囉"]:
             buttons_template = ButtonsTemplate(
                 title='🌫️ 空氣品質查詢系統',
                 text='請選擇功能',
@@ -156,7 +194,7 @@ def handle_message(event):
             )
         
         # ⭐ 今日空品（即時資料）
-        elif user_text in ["今日", "即時", "現在", "空品"]:
+        elif user_text in ["今日", "即時", "現在", "空品", "查詢空品", "空氣品質"]:
             print("📡 開始取得即時空氣品質資料...")
             
             # 取得 API 金鑰
@@ -167,7 +205,11 @@ def handle_message(event):
             
             # 檢查 API 設定
             if not all([api_key, api_secret, station_id, moenv_token]):
-                reply_text = "⚠️ 系統設定不完整\n\n請稍後再試或聯絡管理員\n\n💡 您也可以點擊「開啟查詢系統」\n查看歷史資料"
+                reply_text = "⚠️ 系統設定不完整\n\n" + \
+                           "無法取得即時資料\n\n" + \
+                           "💡 您可以：\n" + \
+                           "• 點擊「開啟查詢系統」查看歷史資料\n" + \
+                           "• 聯絡系統管理員"
                 line_bot_api.reply_message_with_http_info(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
@@ -176,53 +218,93 @@ def handle_message(event):
                 )
                 return
             
-            # 取得 AirLink 資料
-            airlink_data = get_current_airlink_data(api_key, api_secret, station_id)
-            print(f"📊 AirLink 資料: {airlink_data}")
-            
-            # 取得環保署資料
-            moenv_data = get_current_moenv_data(moenv_token)
-            print(f"📊 環保署資料: {moenv_data}")
-            
-            # 合併資料
-            all_data = {}
-            if airlink_data:
-                all_data.update(airlink_data)
-            if moenv_data:
-                all_data.update(moenv_data)
-            
-            # 格式化訊息
-            reply_text = format_air_quality_message(all_data)
-            
-            line_bot_api.reply_message_with_http_info(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=reply_text)]
+            try:
+                # 取得 AirLink 資料
+                print("📡 正在取得 AirLink 資料...")
+                airlink_data = get_current_airlink_data(api_key, api_secret, station_id)
+                print(f"📊 AirLink 資料: {airlink_data}")
+                
+                # 取得環保署資料
+                print("📡 正在取得環保署資料...")
+                moenv_data = get_current_moenv_data(moenv_token)
+                print(f"📊 環保署資料: {moenv_data}")
+                
+                # 合併資料
+                all_data = {}
+                if airlink_data:
+                    all_data.update(airlink_data)
+                if moenv_data:
+                    all_data.update(moenv_data)
+                
+                # 格式化訊息
+                reply_text = format_air_quality_message(all_data)
+                
+                line_bot_api.reply_message_with_http_info(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=reply_text)]
+                    )
                 )
-            )
+            except Exception as e:
+                print(f"❌ API 呼叫錯誤: {e}")
+                import traceback
+                traceback.print_exc()
+                
+                error_text = "❌ 取得資料時發生錯誤\n\n" + \
+                           "請稍後再試\n\n" + \
+                           "💡 您也可以點擊「開啟查詢系統」\n" + \
+                           "查看歷史資料"
+                line_bot_api.reply_message_with_http_info(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=error_text)]
+                    )
+                )
         
         # 使用說明
-        elif user_text == "說明":
-            help_text = """🌫️ 空氣品質查詢系統使用說明
+        elif user_text in ["說明", "help", "Help", "使用說明", "教學"]:
+            help_text = """🌫️ 空氣品質查詢系統
 
-📱 功能特色：
-✅ 即時空氣品質數據
-✅ 多測站比較分析
+📱 主要功能：
+━━━━━━━━━━━━
+✅ 即時空氣品質查詢
+✅ 歷史資料分析
 ✅ 趨勢圖表檢視
+✅ 多測站比較
 ✅ 資料匯出功能
 
 🎯 監測站點：
-- AirLink: 南區上、南區下
-- 環保署: 仁武、楠梓
+━━━━━━━━━━━━
+📍 AirLink: 南區上、南區下
+📍 環保署: 仁武、楠梓
 
 📊 使用方式：
-1. 輸入「今日」或「即時」查看即時空品
-2. 輸入「選單」查看功能
-3. 點擊「開啟查詢系統」查看歷史資料
-4. 選擇查詢日期範圍
-5. 查看數據與圖表
+━━━━━━━━━━━━
+1️⃣ 輸入「今日」或「即時」
+   → 查看即時空品資料
 
-💡 提示：
+2️⃣ 輸入「選單」或「開始」
+   → 顯示功能選單
+
+3️⃣ 點擊「開啟查詢系統」
+   → 查看完整歷史資料
+   → 自訂日期範圍
+   → 圖表趨勢分析
+   → 匯出 CSV 檔案
+
+📌 空品標準：
+━━━━━━━━━━━━
+- PM2.5 良好 ≤ 15 μg/m³
+- PM2.5 普通 ≤ 35 μg/m³
+- PM10  良好 ≤ 54 μg/m³
+- PM10  普通 ≤ 125 μg/m³
+
+🔄 更新頻率：
+━━━━━━━━━━━━
+- AirLink: 每 5 分鐘
+- 環保署: 每小時
+
+💡 小提示：
 在 LINE 中開啟可獲得最佳體驗！"""
             
             line_bot_api.reply_message_with_http_info(
@@ -234,7 +316,13 @@ def handle_message(event):
         
         # 其他訊息
         else:
-            reply_text = f"您說：{user_text}\n\n💡 輸入「開始」或「選單」查看功能\n💡 輸入「今日」查看即時空品"
+            reply_text = f"💬 您說：{user_text}\n\n" + \
+                        "━━━━━━━━━━━━\n\n" + \
+                        "可用指令：\n" + \
+                        "• 「今日」或「即時」→ 查看即時空品\n" + \
+                        "• 「選單」或「開始」→ 顯示功能選單\n" + \
+                        "• 「說明」→ 查看使用說明\n\n" + \
+                        "💡 或點擊下方選單按鈕"
             line_bot_api.reply_message_with_http_info(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
