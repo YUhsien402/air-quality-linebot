@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-air_quality_api.py - 使用 LSID 直接查詢版本
-解決 Station ID 和 LSID 不匹配的問題
+air_quality_api.py - 最終修正版
+使用 Station ID 但只處理指定的 LSID
 """
 
 import requests
@@ -19,108 +19,123 @@ AIRLINK_LSIDS = {
     655484: "南區下"
 }
 
-def generate_sensor_signature(api_key: str, api_secret: str, t: int) -> str:
-    """生成 Sensor API 簽名"""
-    parts = ["api-key", api_key, "t", str(t)]
+def generate_current_signature(api_key: str, api_secret: str, t: int, station_id: str) -> str:
+    """生成 Current API 簽名"""
+    parts = ["api-key", api_key, "station-id", str(station_id), "t", str(t)]
     data = "".join(parts)
     return hmac.new(api_secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
-def get_sensor_data(api_key: str, api_secret: str, lsid: int) -> Optional[Dict]:
+def get_current_airlink_data(api_key: str, api_secret: str, station_id: str) -> Optional[Dict]:
     """
-    直接使用 LSID 取得感應器資料
+    取得 AirLink 即時資料
+    修正版：從所有 Station 查詢，但只取指定的 LSID
     """
     try:
-        t = int(time.time())
-        signature = generate_sensor_signature(api_key, api_secret, t)
+        # 如果沒有提供 station_id 或為空，使用預設值
+        if not station_id:
+            station_id = "167944"
         
-        # 使用 sensors API endpoint（直接查詢 LSID）
-        url = f"https://api.weatherlink.com/v2/sensors/{lsid}"
-        params = {
-            "api-key": api_key,
-            "t": t,
-            "api-signature": signature
-        }
+        t = int(time.time())
+        signature = generate_current_signature(api_key, api_secret, t, station_id)
+        
+        url = f"https://api.weatherlink.com/v2/current/{station_id}"
+        params = {"api-key": api_key, "t": t, "api-signature": signature}
+        
+        print(f"📡 AirLink API: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"   Station ID: {station_id}")
+        print(f"   目標 LSID: {list(AIRLINK_LSIDS.keys())}")
         
         response = requests.get(url, params=params, timeout=10)
         
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            result = {}
+            sensors = data.get("sensors", [])
+            current_time = datetime.datetime.now()
+            
+            print(f"   API 回傳 {len(sensors)} 個感應器")
+            
+            # 顯示所有找到的 LSID（除錯用）
+            found_lsids = [s.get("lsid") for s in sensors]
+            print(f"   找到的 LSID: {found_lsids}")
+            
+            for sensor in sensors:
+                lsid = sensor.get("lsid")
+                
+                # 🔥 只處理我們指定的 LSID
+                if lsid in AIRLINK_LSIDS:
+                    station_name = AIRLINK_LSIDS[lsid]
+                    print(f"   ✓ 處理 {station_name} (LSID: {lsid})")
+                    
+                    sensor_data = sensor.get("data", [])
+                    
+                    if sensor_data:
+                        latest = sensor_data[0]
+                        
+                        # 🔥 優先使用 _last 欄位
+                        pm25 = latest.get("pm_2p5_last") or latest.get("pm_2p5")
+                        pm10 = latest.get("pm_10_last") or latest.get("pm_10")
+                        
+                        # 時間處理
+                        data_ts = latest.get("ts")
+                        if data_ts:
+                            data_time = datetime.datetime.fromtimestamp(data_ts)
+                            age_minutes = int((current_time - data_time).total_seconds() / 60)
+                            
+                            if age_minutes <= 5:
+                                time_label = f"{data_time.strftime('%m/%d %H:%M')} (剛更新)"
+                            elif age_minutes <= 15:
+                                time_label = f"{data_time.strftime('%m/%d %H:%M')} ({age_minutes}分鐘前)"
+                            elif age_minutes <= 60:
+                                time_label = f"{data_time.strftime('%m/%d %H:%M')} ({age_minutes}分鐘前)"
+                            else:
+                                hours = age_minutes // 60
+                                time_label = f"{data_time.strftime('%m/%d %H:%M')} ({hours}小時前) ⚠️"
+                            
+                            if age_minutes > 30:
+                                print(f"   ⚠️ {station_name} 資料延遲 {age_minutes} 分鐘")
+                        else:
+                            time_label = current_time.strftime("%m/%d %H:%M")
+                        
+                        if pm25 is not None or pm10 is not None:
+                            result[station_name] = {
+                                "PM2.5": round(pm25, 1) if pm25 else None,
+                                "PM10": round(pm10, 1) if pm10 else None,
+                                "time": time_label
+                            }
+                            print(f"   ✅ {station_name}: PM2.5={pm25}, 年齡={age_minutes if data_ts else '?'}分")
+                        else:
+                            print(f"   ⚠️ {station_name}: 無 PM 數據")
+                    else:
+                        print(f"   ⚠️ {station_name}: sensor.data 為空")
+                else:
+                    # 不是目標 LSID，跳過（但記錄日誌）
+                    print(f"   - 跳過 LSID: {lsid} (不在目標列表)")
+            
+            # 檢查是否找到目標 LSID
+            missing_lsids = set(AIRLINK_LSIDS.keys()) - set(result.keys()).union(
+                {k: v for k, v in AIRLINK_LSIDS.items() if v in result}.keys()
+            )
+            
+            if missing_lsids:
+                print(f"   ⚠️ 未找到的 LSID: {missing_lsids}")
+                print(f"   💡 提示：這些 LSID 可能不在 Station {station_id} 下")
+            
+            if result:
+                print(f"✅ AirLink 成功: {len(result)} 個測站")
+                return result
+            else:
+                print(f"❌ AirLink: 未找到任何目標 LSID 的資料")
+                return None
         else:
-            print(f"⚠️ LSID {lsid} API 錯誤: {response.status_code}")
+            print(f"❌ AirLink API 錯誤: {response.status_code}")
+            print(f"   回應: {response.text[:200]}")
             return None
             
     except Exception as e:
-        print(f"❌ LSID {lsid} 異常: {e}")
-        return None
-
-def get_current_airlink_data(api_key: str, api_secret: str, station_id: str = None) -> Optional[Dict]:
-    """
-    取得 AirLink 即時資料（使用 LSID 直接查詢）
-    station_id 參數保留但不使用，以保持相容性
-    """
-    print(f"📡 AirLink API 請求: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    result = {}
-    current_time = datetime.datetime.now()
-    
-    # 逐個查詢每個 LSID
-    for lsid, station_name in AIRLINK_LSIDS.items():
-        print(f"🔍 查詢 {station_name} (LSID: {lsid})...")
-        
-        sensor_data = get_sensor_data(api_key, api_secret, lsid)
-        
-        if sensor_data:
-            # 解析 sensors API 的回應格式
-            # sensors API 回傳的結構與 current API 不同
-            data_list = sensor_data.get("data", [])
-            
-            if data_list:
-                latest = data_list[0]
-                
-                # 🔥 優先使用 _last 欄位
-                pm25 = latest.get("pm_2p5_last") or latest.get("pm_2p5")
-                pm10 = latest.get("pm_10_last") or latest.get("pm_10")
-                
-                # 時間處理
-                data_ts = latest.get("ts")
-                if data_ts:
-                    data_time = datetime.datetime.fromtimestamp(data_ts)
-                    age_minutes = int((current_time - data_time).total_seconds() / 60)
-                    
-                    if age_minutes <= 5:
-                        time_label = f"{data_time.strftime('%m/%d %H:%M')} (剛更新)"
-                    elif age_minutes <= 15:
-                        time_label = f"{data_time.strftime('%m/%d %H:%M')} ({age_minutes}分鐘前)"
-                    elif age_minutes <= 60:
-                        time_label = f"{data_time.strftime('%m/%d %H:%M')} ({age_minutes}分鐘前)"
-                    else:
-                        hours = age_minutes // 60
-                        time_label = f"{data_time.strftime('%m/%d %H:%M')} ({hours}小時前) ⚠️"
-                    
-                    if age_minutes > 30:
-                        print(f"⚠️ {station_name} 資料延遲 {age_minutes} 分鐘")
-                else:
-                    time_label = current_time.strftime("%m/%d %H:%M")
-                
-                if pm25 is not None or pm10 is not None:
-                    result[station_name] = {
-                        "PM2.5": round(pm25, 1) if pm25 else None,
-                        "PM10": round(pm10, 1) if pm10 else None,
-                        "time": time_label
-                    }
-                    print(f"✅ {station_name}: PM2.5={pm25}, 年齡={age_minutes if data_ts else '?'}分")
-                else:
-                    print(f"⚠️ {station_name}: 無 PM 數據")
-            else:
-                print(f"⚠️ {station_name}: 無資料")
-        else:
-            print(f"❌ {station_name}: API 呼叫失敗")
-    
-    if result:
-        print(f"✅ 成功取得 {len(result)} 個測站資料")
-        return result
-    else:
-        print("❌ 所有測站都無法取得資料")
+        print(f"❌ AirLink 異常: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def clean_concentration(value) -> Optional[float]:
@@ -216,7 +231,7 @@ def format_air_quality_message(data: Dict) -> str:
     current_time = datetime.datetime.now().strftime("%m/%d %H:%M")
     message = f"🕐 查詢時間: {current_time}\n\n📊 最新空氣品質\n━━━━━━━━━━━━━━━\n\n"
     
-    # 固定順序顯示
+    # 固定順序
     station_order = ["仁武", "楠梓", "南區上", "南區下"]
     
     for station in station_order:
@@ -285,19 +300,20 @@ def format_station_info() -> str:
 
 if __name__ == "__main__":
     import sys
-    print("🧪 API 測試（LSID 直接查詢版）")
+    print("🧪 API 測試（最終修正版）")
     api_key = os.getenv('API_KEY', '')
     api_secret = os.getenv('API_SECRET', '')
+    station_id = os.getenv('STATION_ID', '')
     moenv_token = os.getenv('MOENV_API_TOKEN', '')
     
     if not all([api_key, api_secret]):
-        print("⚠️ 請設定環境變數: API_KEY, API_SECRET")
+        print("⚠️ 請設定: API_KEY, API_SECRET")
         sys.exit(1)
     
-    print(f"\n使用 LSID: {list(AIRLINK_LSIDS.keys())}\n")
+    print(f"\nStation ID: {station_id or '167944 (預設)'}")
+    print(f"目標 LSID: {list(AIRLINK_LSIDS.keys())}\n")
     
-    # 直接查詢 LSID，不需要 station_id
-    airlink_data = get_current_airlink_data(api_key, api_secret)
+    airlink_data = get_current_airlink_data(api_key, api_secret, station_id)
     
     if moenv_token:
         moenv_data = get_current_moenv_data(moenv_token)
