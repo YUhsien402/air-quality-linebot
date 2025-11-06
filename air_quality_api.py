@@ -74,20 +74,8 @@ def get_current_airlink_data(api_key: str, api_secret: str, station_id: str) -> 
                             data_time = datetime.datetime.fromtimestamp(data_ts, tz=TW_TZ)
                             age_minutes = int((current_time - data_time).total_seconds() / 60)
                             
-                            if age_minutes <= 5:
-                                time_label = f"{data_time.strftime('%m/%d %H:%M')} (剛更新)"
-                            elif age_minutes <= 15:
-                                time_label = f"{data_time.strftime('%m/%d %H:%M')} ({age_minutes}分鐘前)"
-                            elif age_minutes <= 60:
-                                time_label = f"{data_time.strftime('%m/%d %H:%M')} ({age_minutes}分鐘前)"
-                            else:
-                                hours = age_minutes // 60
-                                time_label = f"{data_time.strftime('%m/%d %H:%M')} ({hours}小時前) ⚠️"
-                            
-                            if age_minutes > 30:
-                                print(f"   ⚠️ {station_name} 資料延遲 {age_minutes} 分鐘")
                         else:
-                            time_label = current_time.strftime("%m/%d %H:%M")
+                            time_label = current_time.strftime("%Y/%m/%d %H:%M")
                         
                         if pm25 is not None or pm10 is not None:
                             result[station_name] = {
@@ -149,18 +137,10 @@ def get_current_moenv_data(api_token: str) -> Optional[Dict]:
                         publish_time = record.get("publishtime", "")
                         if publish_time:
                             try:
-                                dt = datetime.datetime.strptime(publish_time, "%Y-%m-%d %H:%M:%S")
+                                dt = datetime.datetime.strptime(publish_time, "%Y-%m-%d %H:%M")
                                 # 環保署資料已經是台灣時間
                                 dt = dt.replace(tzinfo=TW_TZ)
                                 age_minutes = int((current_time - dt).total_seconds() / 60)
-                                
-                                if age_minutes <= 15:
-                                    time_str = dt.strftime("%m/%d %H:%M") + " (剛更新)"
-                                elif age_minutes <= 60:
-                                    time_str = dt.strftime("%m/%d %H:%M") + f" ({age_minutes}分鐘前)"
-                                else:
-                                    hours = age_minutes // 60
-                                    time_str = dt.strftime("%m/%d %H:%M") + f" ({hours}小時前)"
                             except:
                                 time_str = publish_time
                         else:
@@ -185,13 +165,13 @@ def get_aqi_level(pm25_value: Optional[float]) -> Tuple[str, str]:
         return "❓ 無資料", ""
     try:
         pm25 = float(pm25_value)
-        if pm25 <= 15:
+        if pm25 <= 10:
             return "😊 優良", "#00E400"
-        elif pm25 <= 30:
+        elif pm25 <= 20:
             return "🙂 良好", "#FFFF00"
-        elif pm25 <= 50:
+        elif pm25 <= 30:
             return "😐 普通", "#FF7E00"
-        elif pm25 <= 100:
+        elif pm25 <= 50:
             return "😷 不良", "#FF0000"
         else:
             return "☠️ 非常不良", "#7E0023"
@@ -306,3 +286,4 @@ if __name__ == "__main__":
         print("=" * 70)
     else:
         print("❌ 無資料")
+
