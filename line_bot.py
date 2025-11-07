@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LINE Bot - 完整修正版
+LINE Bot - 與 Streamlit 完全一致版本
 修正：
-1. 即時查詢時間格式
-2. 加強歷史查詢的 debug logs
+1. 日期範圍計算（不多查詢一天）
+2. 加入環保署歷史資料
+3. 時區處理與 Streamlit 一致
 """
 
 from flask import Flask, request, abort
@@ -44,7 +45,7 @@ AIRLINK_LSIDS = {
     655484: "南區下"
 }
 
-# ==================== Historic API ====================
+# ==================== AirLink Historic API ====================
 
 def generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts):
     """簽名函數"""
@@ -59,7 +60,7 @@ def generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts):
     return hmac.new(api_secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
 def fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts):
-    """呼叫 Historic API"""
+    """呼叫 AirLink Historic API"""
     t = int(time.time())
     signature = generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts)
     url = f"https://api.weatherlink.com/v2/historic/{station_id}"
@@ -71,96 +72,127 @@ def fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts):
         "api-signature": signature
     }
     
-    # 🔍 詳細 logs
-    start_dt_utc = datetime.datetime.utcfromtimestamp(start_ts)
-    end_dt_utc = datetime.datetime.utcfromtimestamp(end_ts)
-    print(f"📡 Historic API:")
-    print(f"   start_ts: {start_ts} → UTC {start_dt_utc}")
-    print(f"   end_ts: {end_ts} → UTC {end_dt_utc}")
-    print(f"   URL: {url}")
-    
     try:
         resp = requests.get(url, params=params, timeout=30)
-        print(f"   HTTP 狀態: {resp.status_code}")
-        
         if resp.status_code != 200:
-            print(f"   ❌ 錯誤內容: {resp.text}")
+            print(f"❌ AirLink Historic API 錯誤: {resp.status_code}")
             return None
-        
-        data = resp.json()
-        sensors = data.get("sensors", [])
-        print(f"   ✅ 找到 {len(sensors)} 個感應器")
-        
-        # 顯示所有 LSID
-        for sensor in sensors:
-            lsid = sensor.get("lsid")
-            data_count = len(sensor.get("data", []))
-            print(f"      LSID {lsid}: {data_count} 筆資料")
-        
-        return data
+        return resp.json()
     except Exception as e:
-        print(f"   ❌ 異常: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ AirLink Historic API 異常: {e}")
         return None
 
-def query_historical_data(api_key, api_secret, station_id, start_date, end_date):
+# ==================== 環保署 Historic API ====================
+
+def fetch_moenv_historical(api_token, date_str):
     """
-    歷史資料查詢
+    查詢環保署歷史資料
+    date_str 格式: "2025-11-04"
+    """
+    try:
+        url = "https://data.moenv.gov.tw/api/v2/aqx_p_488"
+        params = {
+            "api_key": api_token,
+            "limit": 1000,
+            "sort": "datacreationdate desc",
+            "format": "json",
+            "filters": f"datacreationdate,eq,{date_str}"
+        }
+        
+        print(f"   查詢環保署 {date_str}")
+        
+        response = requests.get(url, params=params, timeout=15, verify=False)
+        
+        if response.status_code != 200:
+            print(f"   ❌ 環保署 API 錯誤: {response.status_code}")
+            return []
+        
+        data = response.json()
+        records = data.get("records", [])
+        print(f"   ✅ 環保署: {len(records)} 筆原始資料")
+        
+        # 篩選仁武、楠梓
+        filtered = []
+        for record in records:
+            site_name = record.get("sitename", "")
+            if site_name in ["仁武", "楠梓"]:
+                filtered.append(record)
+        
+        print(f"   ✅ 仁武+楠梓: {len(filtered)} 筆")
+        return filtered
+        
+    except Exception as e:
+        print(f"   ❌ 環保署 API 異常: {e}")
+        return []
+
+def clean_concentration(value):
+    """清理濃度值"""
+    if not value:
+        return None
+    value_str = str(value).strip()
+    invalid_markers = ['#', '*', 'x', 'A', 'NR', 'ND', '', '-']
+    if value_str in invalid_markers or any(m in value_str for m in invalid_markers if m):
+        return None
+    try:
+        numeric_value = float(value_str)
+        return numeric_value if 0 <= numeric_value <= 1000 else None
+    except:
+        return None
+
+# ==================== 歷史查詢主函數 ====================
+
+def query_historical_data(api_key, api_secret, station_id, moenv_token, start_date, end_date):
+    """
+    歷史資料查詢（與 Streamlit 完全一致）
     """
     try:
         print("=" * 70)
-        print(f"🔍 開始歷史查詢")
-        print(f"   日期範圍: {start_date} ~ {end_date}")
-        print(f"   Station ID: {station_id}")
+        print(f"🔍 開始歷史查詢: {start_date} ~ {end_date}")
         print("=" * 70)
         
-        # 不使用時區
-        start_dt = datetime.datetime.combine(start_date, datetime.time.min)
-        end_dt = datetime.datetime.combine(end_date, datetime.time.min)
-        end_dt_fetch = end_dt + datetime.timedelta(days=1)
-        
-        print(f"📅 查詢時間範圍:")
-        print(f"   start_dt: {start_dt} (naive)")
-        print(f"   end_dt_fetch: {end_dt_fetch} (naive)")
-        
         all_records = []
-        current_dt = start_dt
-        day_count = 0
         
-        # 逐日查詢
-        while current_dt < end_dt_fetch:
-            day_count += 1
-            next_dt = min(current_dt + datetime.timedelta(days=1), end_dt_fetch)
+        # 🔥 修正：逐日查詢，只保留目標日期的資料
+        current_date = start_date
+        while current_date <= end_date:  # 使用 <= 而非 <
+            print(f"\n📅 查詢 {current_date}")
+            
+            # 計算該日的時間戳記範圍
+            current_dt = datetime.datetime.combine(current_date, datetime.time.min)
+            next_dt = current_dt + datetime.timedelta(days=1)
+            
             start_ts = int(current_dt.timestamp())
             end_ts = int(next_dt.timestamp())
             
-            print(f"\n📅 查詢第 {day_count} 天: {current_dt.date()}")
+            print(f"   時間戳記: {start_ts} ~ {end_ts}")
             
-            data = fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts)
+            # 1. 查詢 AirLink
+            airlink_data = fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts)
             
-            if data:
-                sensors = data.get("sensors", [])
-                
+            if airlink_data:
+                sensors = airlink_data.get("sensors", [])
                 for sensor in sensors:
                     lsid = sensor.get("lsid")
-                    
                     if lsid not in AIRLINK_LSIDS:
-                        print(f"   ⚠️ 跳過 LSID {lsid}（不在目標列表）")
                         continue
                     
                     device_name = AIRLINK_LSIDS[lsid]
                     sensor_data = sensor.get("data", [])
-                    
-                    print(f"   處理 {device_name} (LSID {lsid}): {len(sensor_data)} 筆")
+                    print(f"   AirLink {device_name}: {len(sensor_data)} 筆")
                     
                     for record in sensor_data:
                         ts = record.get("ts")
                         if not ts:
                             continue
                         
-                        # 格式化時使用 TW_TZ
+                        # 使用 TW_TZ 格式化
                         timestamp = datetime.datetime.fromtimestamp(ts, tz=TW_TZ)
+                        record_date = timestamp.date()
+                        
+                        # 🔥 只保留目標日期的資料
+                        if record_date != current_date:
+                            continue
+                        
                         date_str = timestamp.strftime("%Y/%m/%d")
                         
                         pm25 = record.get("pm_2p5_avg") or record.get("pm_2p5") or record.get("pm_2p5_last")
@@ -170,34 +202,36 @@ def query_historical_data(api_key, api_secret, station_id, start_date, end_date)
                             all_records.append({
                                 "device": device_name,
                                 "date": date_str,
-                                "timestamp": timestamp,
                                 "PM2.5": round(pm25, 1) if pm25 else None,
                                 "PM10": round(pm10, 1) if pm10 else None
                             })
-            else:
-                print(f"   ❌ 該日無資料")
             
-            current_dt = next_dt
+            # 2. 查詢環保署
+            date_str_api = current_date.strftime("%Y-%m-%d")
+            moenv_records = fetch_moenv_historical(moenv_token, date_str_api)
+            
+            for record in moenv_records:
+                site_name = record.get("sitename", "")
+                pm25 = clean_concentration(record.get("pm2.5", ""))
+                pm10 = clean_concentration(record.get("pm10", ""))
+                
+                if pm25 is not None or pm10 is not None:
+                    all_records.append({
+                        "device": site_name,
+                        "date": current_date.strftime("%Y/%m/%d"),
+                        "PM2.5": round(pm25, 1) if pm25 else None,
+                        "PM10": round(pm10, 1) if pm10 else None
+                    })
+            
+            current_date += datetime.timedelta(days=1)
             time.sleep(0.5)
         
         print(f"\n{'='*70}")
-        print(f"📊 查詢結果統計:")
-        print(f"   總共 {len(all_records)} 筆資料")
+        print(f"📊 查詢完成: 總計 {len(all_records)} 筆")
+        print(f"{'='*70}\n")
         
         if not all_records:
-            print(f"   ❌ 無任何資料")
-            print(f"{'='*70}\n")
-            return f"❌ {start_date} ~ {end_date} 期間無資料\n\n可能原因：\n• 該時段感應器離線\n• Station ID 設定錯誤\n• API 權限不足"
-        
-        # 按設備統計
-        device_counts = {}
-        for record in all_records:
-            device = record["device"]
-            device_counts[device] = device_counts.get(device, 0) + 1
-        
-        for device, count in device_counts.items():
-            print(f"   {device}: {count} 筆")
-        print(f"{'='*70}\n")
+            return f"❌ {start_date} ~ {end_date} 期間無資料"
         
         # 計算每日平均
         daily_avg = {}
@@ -224,7 +258,8 @@ def query_historical_data(api_key, api_secret, station_id, start_date, end_date)
             
             message += f"【{date_roc}】\n"
             
-            for device in ["南區上", "南區下"]:
+            # 按順序顯示：仁武、楠梓、南區上、南區下
+            for device in ["仁武", "楠梓", "南區上", "南區下"]:
                 key = (device, date_str)
                 if key in daily_avg:
                     pm25_list = daily_avg[key]["pm25"]
@@ -239,7 +274,7 @@ def query_historical_data(api_key, api_secret, station_id, start_date, end_date)
                     message += f"  {device}: PM2.5={pm25_str}, PM10={pm10_str}\n"
             message += "\n"
         
-        message += f"━━━━━━━━━━━━━━━\n📊 總計 {len(all_records)} 筆資料\nℹ️ 資料來源：AirLink"
+        message += f"━━━━━━━━━━━━━━━\n📊 總計 {len(all_records)} 筆資料\nℹ️ 資料來源：AirLink、環保署"
         
         return message
         
@@ -252,7 +287,7 @@ def query_historical_data(api_key, api_secret, station_id, start_date, end_date)
 def query_historical_async(user_id, start_date, end_date):
     """背景執行查詢"""
     try:
-        result = query_historical_data(API_KEY, API_SECRET, STATION_ID, start_date, end_date)
+        result = query_historical_data(API_KEY, API_SECRET, STATION_ID, MOENV_API_TOKEN, start_date, end_date)
         
         if len(result) > 4500:
             parts = []
@@ -282,8 +317,6 @@ def query_historical_async(user_id, start_date, end_date):
             
     except Exception as e:
         print(f"❌ 背景查詢異常: {e}")
-        import traceback
-        traceback.print_exc()
         line_bot_api.push_message(
             user_id,
             TextSendMessage(text=f"❌ 查詢失敗: {str(e)}", quick_reply=create_main_menu_quick_reply())
@@ -322,7 +355,7 @@ def get_current_airlink_data(api_key, api_secret, station_id):
                         
                         if data_ts:
                             data_time = datetime.datetime.fromtimestamp(data_ts, tz=TW_TZ)
-                            time_label = data_time.strftime("%m/%d %H:%M")  # 🔥 修正格式
+                            time_label = data_time.strftime("%m/%d %H:%M")
                         else:
                             time_label = current_time.strftime("%m/%d %H:%M")
                         
@@ -336,19 +369,6 @@ def get_current_airlink_data(api_key, api_secret, station_id):
         return None
     except Exception as e:
         print(f"❌ Current API 錯誤: {e}")
-        return None
-
-def clean_concentration(value):
-    if not value:
-        return None
-    value_str = str(value).strip()
-    invalid_markers = ['#', '*', 'x', 'A', 'NR', 'ND', '', '-']
-    if value_str in invalid_markers or any(m in value_str for m in invalid_markers if m):
-        return None
-    try:
-        numeric_value = float(value_str)
-        return numeric_value if 0 <= numeric_value <= 1000 else None
-    except:
         return None
 
 def get_current_moenv_data(api_token):
@@ -381,7 +401,7 @@ def get_current_moenv_data(api_token):
             return result if result else None
         return None
     except Exception as e:
-        print(f"❌ 環保署錯誤: {e}")
+        print(f"❌ 環保署即時錯誤: {e}")
         return None
 
 def get_aqi_level(pm25_value):
@@ -515,7 +535,7 @@ def handle_message(event):
                 return
             
             user_states[user_id] = {}
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🔍 查詢中，預計 {days * 3}-{days * 5} 秒...\n\n💡 Render Logs 會顯示詳細過程"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🔍 查詢中，預計 {days * 3}-{days * 5} 秒..."))
             
             thread = threading.Thread(target=query_historical_async, args=(user_id, start_date, end_date))
             thread.daemon = True
@@ -537,7 +557,7 @@ def handle_message(event):
     
     elif text in ["歷史查詢", "歷史資料"]:
         user_states[user_id] = {'waiting_for_date_range': True}
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📅 請輸入日期範圍\n\n格式：2025/11/06-2025/11/06\n或：11/6-11/6\n\n💡 建議 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📅 請輸入日期範圍\n\n格式：2025/11/04-2025/11/06\n或：11/4-11/6\n\n💡 建議 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
     
     elif text in ["選單", "功能"]:
         message = "🌟 南區案空氣品質查詢系統\n\n請選擇功能：\n\n📊 今日空品\n📅 歷史查詢\n🌐 開啟系統"
@@ -568,7 +588,6 @@ def handle_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 啟動服務 (詳細 Logs 版)")
-    print(f"   API Key: {API_KEY[:10] if API_KEY else '未設定'}...")
-    print(f"   Station ID: {STATION_ID}")
+    print(f"🚀 啟動服務 (與 Streamlit 完全一致)")
+    print(f"   修正：日期範圍、環保署資料、時區處理")
     app.run(host='0.0.0.0', port=port, debug=False)
