@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LINE Bot - 使用與 Streamlit 完全相同的 Historic API 邏輯
+LINE Bot - 最終修正版
+🔥 關鍵修正：時間戳記計算不使用時區
 """
 
 from flask import Flask, request, abort
@@ -16,7 +17,7 @@ import requests
 import hmac
 import hashlib
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
@@ -41,12 +42,10 @@ AIRLINK_LSIDS = {
     655484: "南區下"
 }
 
-# ==================== 使用與 Streamlit 完全相同的簽名函數 ====================
+# ==================== Historic API（修正版）====================
 
 def generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts):
-    """
-    🔥 與 Streamlit 完全相同的簽名函數
-    """
+    """與 Streamlit 相同的簽名函數"""
     parts = [
         "api-key", api_key, 
         "end-timestamp", str(end_ts), 
@@ -58,12 +57,10 @@ def generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts):
     return hmac.new(api_secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
 def fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts):
-    """
-    🔥 與 Streamlit 完全相同的 Historic API 呼叫
-    """
+    """與 Streamlit 相同的 API 呼叫"""
     t = int(time.time())
     signature = generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts)
-    url = "https://api.weatherlink.com/v2/historic/" + str(station_id)
+    url = f"https://api.weatherlink.com/v2/historic/{station_id}"
     params = {
         "api-key": api_key, 
         "t": t, 
@@ -72,31 +69,31 @@ def fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts):
         "api-signature": signature
     }
     
-    print(f"📡 Historic API 請求:")
-    print(f"   URL: {url}")
-    print(f"   start_ts: {start_ts}")
-    print(f"   end_ts: {end_ts}")
+    print(f"📡 API 請求: start={start_ts}, end={end_ts}")
     
     try:
         resp = requests.get(url, params=params, timeout=30)
         print(f"   狀態: {resp.status_code}")
         
         if resp.status_code != 200:
-            print(f"   錯誤: {resp.text[:200]}")
+            print(f"   ❌ 錯誤: {resp.text[:200]}")
             return None
         return resp.json()
     except Exception as e:
-        print(f"   異常: {e}")
+        print(f"   ❌ 異常: {e}")
         return None
 
-def query_historical_streamlit_style(api_key, api_secret, station_id, start_date, end_date):
+def query_historical_data(api_key, api_secret, station_id, start_date, end_date):
     """
-    使用 Streamlit 風格的歷史查詢
+    歷史資料查詢
+    🔥 關鍵修正：不使用時區計算時間戳記
     """
     try:
         print(f"🔍 查詢: {start_date} ~ {end_date}")
         
-        # 🔥 與 Streamlit 相同：使用 datetime.combine
+        # 🔥 重要：不加 tzinfo
+        # datetime.combine() 產生 naive datetime
+        # timestamp() 會將其視為本地時間並正確轉換為 UTC
         start_dt = datetime.datetime.combine(start_date, datetime.time.min)
         end_dt = datetime.datetime.combine(end_date, datetime.time.min)
         end_dt_fetch = end_dt + datetime.timedelta(days=1)
@@ -104,13 +101,13 @@ def query_historical_streamlit_style(api_key, api_secret, station_id, start_date
         all_records = []
         current_dt = start_dt
         
-        # 逐日查詢（與 Streamlit 相同）
+        # 逐日查詢
         while current_dt < end_dt_fetch:
             next_dt = min(current_dt + datetime.timedelta(days=1), end_dt_fetch)
             start_ts = int(current_dt.timestamp())
             end_ts = int(next_dt.timestamp())
             
-            print(f"📅 查詢日期: {current_dt.date()}")
+            print(f"📅 查詢: {current_dt.date()}")
             
             data = fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts)
             
@@ -127,10 +124,14 @@ def query_historical_streamlit_style(api_key, api_secret, station_id, start_date
                     print(f"   {device_name}: {len(sensor_data)} 筆")
                     
                     for record in sensor_data:
-                        timestamp = datetime.datetime.fromtimestamp(record["ts"], tz=TW_TZ)
+                        ts = record.get("ts")
+                        if not ts:
+                            continue
+                        
+                        # 🔥 格式化時使用 TW_TZ（顯示用）
+                        timestamp = datetime.datetime.fromtimestamp(ts, tz=TW_TZ)
                         date_str = timestamp.strftime("%Y/%m/%d")
                         
-                        # 🔥 與 Streamlit 相同的欄位優先順序
                         pm25 = record.get("pm_2p5_avg") or record.get("pm_2p5") or record.get("pm_2p5_last")
                         pm10 = record.get("pm_10_avg") or record.get("pm_10") or record.get("pm_10_last")
                         
@@ -143,7 +144,7 @@ def query_historical_streamlit_style(api_key, api_secret, station_id, start_date
                             })
             
             current_dt = next_dt
-            time.sleep(1)
+            time.sleep(0.5)  # 避免 API rate limit
         
         if not all_records:
             return f"❌ {start_date} ~ {end_date} 期間無資料"
@@ -202,8 +203,35 @@ def query_historical_streamlit_style(api_key, api_secret, station_id, start_date
 def query_historical_async(user_id, start_date, end_date):
     """背景執行查詢"""
     try:
-        result = query_historical_streamlit_style(API_KEY, API_SECRET, STATION_ID, start_date, end_date)
-        line_bot_api.push_message(user_id, TextSendMessage(text=result, quick_reply=create_main_menu_quick_reply()))
+        result = query_historical_data(API_KEY, API_SECRET, STATION_ID, start_date, end_date)
+        
+        # 分段傳送（如果太長）
+        if len(result) > 4500:
+            parts = []
+            current = ""
+            for line in result.split('\n'):
+                if len(current) + len(line) + 1 < 4500:
+                    current += line + '\n'
+                else:
+                    parts.append(current)
+                    current = line + '\n'
+            if current:
+                parts.append(current)
+            
+            for i, part in enumerate(parts):
+                line_bot_api.push_message(
+                    user_id,
+                    TextSendMessage(
+                        text=part,
+                        quick_reply=create_main_menu_quick_reply() if i == len(parts)-1 else None
+                    )
+                )
+        else:
+            line_bot_api.push_message(
+                user_id,
+                TextSendMessage(text=result, quick_reply=create_main_menu_quick_reply())
+            )
+            
     except Exception as e:
         print(f"❌ 背景查詢異常: {e}")
         line_bot_api.push_message(
@@ -211,7 +239,7 @@ def query_historical_async(user_id, start_date, end_date):
             TextSendMessage(text=f"❌ 查詢失敗: {str(e)}", quick_reply=create_main_menu_quick_reply())
         )
 
-# ==================== 即時查詢 ====================
+# ==================== Current API ====================
 
 def generate_current_signature(api_key, api_secret, t, station_id):
     parts = ["api-key", api_key, "station-id", str(station_id), "t", str(t)]
@@ -359,7 +387,7 @@ def format_air_quality_message(data):
     message += "━━━━━━━━━━━━━━━\n📌 法規標準（24小時平均值）\n• PM2.5 ≤ 30 μg/m³\n• PM10  ≤ 75 μg/m³\n\nℹ️ 資料來源：AirLink、環保署"
     return message
 
-# ==================== LINE Bot 處理 ====================
+# ==================== LINE Bot ====================
 
 def create_main_menu_quick_reply():
     return QuickReply(items=[
@@ -431,19 +459,19 @@ def handle_message(event):
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 開始日期不能晚於結束日期", quick_reply=create_date_range_examples_quick_reply()))
                 return
             
-            days = (end_date - start_date).days
+            days = (end_date - start_date).days + 1
             if days > 7:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 建議查詢 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 免費版建議查詢 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
                 return
             
             user_states[user_id] = {}
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🔍 查詢中，請稍候..."))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🔍 查詢中，預計 {days * 3}-{days * 5} 秒..."))
             
             thread = threading.Thread(target=query_historical_async, args=(user_id, start_date, end_date))
             thread.daemon = True
             thread.start()
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 日期格式錯誤", quick_reply=create_date_range_examples_quick_reply()))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 日期格式錯誤\n\n格式：2025/11/06-2025/11/06", quick_reply=create_date_range_examples_quick_reply()))
         return
     
     if text in ["今日", "今天"]:
@@ -459,7 +487,7 @@ def handle_message(event):
     
     elif text in ["歷史查詢", "歷史資料"]:
         user_states[user_id] = {'waiting_for_date_range': True}
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📅 請輸入日期範圍\n\n格式：2025/11/06-2025/11/06\n\n💡 建議 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📅 請輸入日期範圍\n\n格式：2025/11/06-2025/11/06\n或：11/6-11/6\n\n💡 建議 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
     
     elif text in ["選單", "功能"]:
         message = "🌟 南區案空氣品質查詢系統\n\n請選擇功能：\n\n📊 今日空品\n📅 歷史查詢\n🌐 開啟系統"
@@ -475,7 +503,7 @@ def handle_message(event):
     else:
         start_date, end_date = parse_date_range(text)
         if start_date and end_date:
-            days = (end_date - start_date).days
+            days = (end_date - start_date).days + 1
             if days > 7:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 建議 7 天以內", quick_reply=create_main_menu_quick_reply()))
                 return
@@ -490,5 +518,7 @@ def handle_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 啟動服務 (使用 Streamlit 相同邏輯)")
+    print(f"🚀 啟動服務 (時間戳記已修正)")
+    print(f"   API Key: {API_KEY[:10] if API_KEY else '未設定'}...")
+    print(f"   Station ID: {STATION_ID}")
     app.run(host='0.0.0.0', port=port, debug=False)
