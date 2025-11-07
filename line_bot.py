@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-LINE Bot - 最終修正版
-🔥 關鍵修正：時間戳記計算不使用時區
+LINE Bot - 完整修正版
+修正：
+1. 即時查詢時間格式
+2. 加強歷史查詢的 debug logs
 """
 
 from flask import Flask, request, abort
@@ -42,10 +44,10 @@ AIRLINK_LSIDS = {
     655484: "南區下"
 }
 
-# ==================== Historic API（修正版）====================
+# ==================== Historic API ====================
 
 def generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts):
-    """與 Streamlit 相同的簽名函數"""
+    """簽名函數"""
     parts = [
         "api-key", api_key, 
         "end-timestamp", str(end_ts), 
@@ -57,7 +59,7 @@ def generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts):
     return hmac.new(api_secret.encode(), data.encode(), hashlib.sha256).hexdigest()
 
 def fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts):
-    """與 Streamlit 相同的 API 呼叫"""
+    """呼叫 Historic API"""
     t = int(time.time())
     signature = generate_signature(api_key, api_secret, t, station_id, start_ts, end_ts)
     url = f"https://api.weatherlink.com/v2/historic/{station_id}"
@@ -69,66 +71,95 @@ def fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts):
         "api-signature": signature
     }
     
-    print(f"📡 API 請求: start={start_ts}, end={end_ts}")
+    # 🔍 詳細 logs
+    start_dt_utc = datetime.datetime.utcfromtimestamp(start_ts)
+    end_dt_utc = datetime.datetime.utcfromtimestamp(end_ts)
+    print(f"📡 Historic API:")
+    print(f"   start_ts: {start_ts} → UTC {start_dt_utc}")
+    print(f"   end_ts: {end_ts} → UTC {end_dt_utc}")
+    print(f"   URL: {url}")
     
     try:
         resp = requests.get(url, params=params, timeout=30)
-        print(f"   狀態: {resp.status_code}")
+        print(f"   HTTP 狀態: {resp.status_code}")
         
         if resp.status_code != 200:
-            print(f"   ❌ 錯誤: {resp.text[:200]}")
+            print(f"   ❌ 錯誤內容: {resp.text}")
             return None
-        return resp.json()
+        
+        data = resp.json()
+        sensors = data.get("sensors", [])
+        print(f"   ✅ 找到 {len(sensors)} 個感應器")
+        
+        # 顯示所有 LSID
+        for sensor in sensors:
+            lsid = sensor.get("lsid")
+            data_count = len(sensor.get("data", []))
+            print(f"      LSID {lsid}: {data_count} 筆資料")
+        
+        return data
     except Exception as e:
         print(f"   ❌ 異常: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def query_historical_data(api_key, api_secret, station_id, start_date, end_date):
     """
     歷史資料查詢
-    🔥 關鍵修正：不使用時區計算時間戳記
     """
     try:
-        print(f"🔍 查詢: {start_date} ~ {end_date}")
+        print("=" * 70)
+        print(f"🔍 開始歷史查詢")
+        print(f"   日期範圍: {start_date} ~ {end_date}")
+        print(f"   Station ID: {station_id}")
+        print("=" * 70)
         
-        # 🔥 重要：不加 tzinfo
-        # datetime.combine() 產生 naive datetime
-        # timestamp() 會將其視為本地時間並正確轉換為 UTC
+        # 不使用時區
         start_dt = datetime.datetime.combine(start_date, datetime.time.min)
         end_dt = datetime.datetime.combine(end_date, datetime.time.min)
         end_dt_fetch = end_dt + datetime.timedelta(days=1)
         
+        print(f"📅 查詢時間範圍:")
+        print(f"   start_dt: {start_dt} (naive)")
+        print(f"   end_dt_fetch: {end_dt_fetch} (naive)")
+        
         all_records = []
         current_dt = start_dt
+        day_count = 0
         
         # 逐日查詢
         while current_dt < end_dt_fetch:
+            day_count += 1
             next_dt = min(current_dt + datetime.timedelta(days=1), end_dt_fetch)
             start_ts = int(current_dt.timestamp())
             end_ts = int(next_dt.timestamp())
             
-            print(f"📅 查詢: {current_dt.date()}")
+            print(f"\n📅 查詢第 {day_count} 天: {current_dt.date()}")
             
             data = fetch_airlink_historical(api_key, api_secret, station_id, start_ts, end_ts)
             
             if data:
                 sensors = data.get("sensors", [])
+                
                 for sensor in sensors:
                     lsid = sensor.get("lsid")
+                    
                     if lsid not in AIRLINK_LSIDS:
+                        print(f"   ⚠️ 跳過 LSID {lsid}（不在目標列表）")
                         continue
                     
                     device_name = AIRLINK_LSIDS[lsid]
                     sensor_data = sensor.get("data", [])
                     
-                    print(f"   {device_name}: {len(sensor_data)} 筆")
+                    print(f"   處理 {device_name} (LSID {lsid}): {len(sensor_data)} 筆")
                     
                     for record in sensor_data:
                         ts = record.get("ts")
                         if not ts:
                             continue
                         
-                        # 🔥 格式化時使用 TW_TZ（顯示用）
+                        # 格式化時使用 TW_TZ
                         timestamp = datetime.datetime.fromtimestamp(ts, tz=TW_TZ)
                         date_str = timestamp.strftime("%Y/%m/%d")
                         
@@ -139,15 +170,34 @@ def query_historical_data(api_key, api_secret, station_id, start_date, end_date)
                             all_records.append({
                                 "device": device_name,
                                 "date": date_str,
+                                "timestamp": timestamp,
                                 "PM2.5": round(pm25, 1) if pm25 else None,
                                 "PM10": round(pm10, 1) if pm10 else None
                             })
+            else:
+                print(f"   ❌ 該日無資料")
             
             current_dt = next_dt
-            time.sleep(0.5)  # 避免 API rate limit
+            time.sleep(0.5)
+        
+        print(f"\n{'='*70}")
+        print(f"📊 查詢結果統計:")
+        print(f"   總共 {len(all_records)} 筆資料")
         
         if not all_records:
-            return f"❌ {start_date} ~ {end_date} 期間無資料"
+            print(f"   ❌ 無任何資料")
+            print(f"{'='*70}\n")
+            return f"❌ {start_date} ~ {end_date} 期間無資料\n\n可能原因：\n• 該時段感應器離線\n• Station ID 設定錯誤\n• API 權限不足"
+        
+        # 按設備統計
+        device_counts = {}
+        for record in all_records:
+            device = record["device"]
+            device_counts[device] = device_counts.get(device, 0) + 1
+        
+        for device, count in device_counts.items():
+            print(f"   {device}: {count} 筆")
+        print(f"{'='*70}\n")
         
         # 計算每日平均
         daily_avg = {}
@@ -189,9 +239,8 @@ def query_historical_data(api_key, api_secret, station_id, start_date, end_date)
                     message += f"  {device}: PM2.5={pm25_str}, PM10={pm10_str}\n"
             message += "\n"
         
-        message += "━━━━━━━━━━━━━━━\nℹ️ 資料來源：AirLink"
+        message += f"━━━━━━━━━━━━━━━\n📊 總計 {len(all_records)} 筆資料\nℹ️ 資料來源：AirLink"
         
-        print(f"✅ 查詢完成: {len(all_records)} 筆資料")
         return message
         
     except Exception as e:
@@ -205,7 +254,6 @@ def query_historical_async(user_id, start_date, end_date):
     try:
         result = query_historical_data(API_KEY, API_SECRET, STATION_ID, start_date, end_date)
         
-        # 分段傳送（如果太長）
         if len(result) > 4500:
             parts = []
             current = ""
@@ -234,6 +282,8 @@ def query_historical_async(user_id, start_date, end_date):
             
     except Exception as e:
         print(f"❌ 背景查詢異常: {e}")
+        import traceback
+        traceback.print_exc()
         line_bot_api.push_message(
             user_id,
             TextSendMessage(text=f"❌ 查詢失敗: {str(e)}", quick_reply=create_main_menu_quick_reply())
@@ -272,7 +322,7 @@ def get_current_airlink_data(api_key, api_secret, station_id):
                         
                         if data_ts:
                             data_time = datetime.datetime.fromtimestamp(data_ts, tz=TW_TZ)
-                            time_label = data_time.strftime("%m/%d %H:%M")
+                            time_label = data_time.strftime("%m/%d %H:%M")  # 🔥 修正格式
                         else:
                             time_label = current_time.strftime("%m/%d %H:%M")
                         
@@ -461,11 +511,11 @@ def handle_message(event):
             
             days = (end_date - start_date).days + 1
             if days > 7:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 免費版建議查詢 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="❌ 建議查詢 7 天以內", quick_reply=create_date_range_examples_quick_reply()))
                 return
             
             user_states[user_id] = {}
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🔍 查詢中，預計 {days * 3}-{days * 5} 秒..."))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"🔍 查詢中，預計 {days * 3}-{days * 5} 秒...\n\n💡 Render Logs 會顯示詳細過程"))
             
             thread = threading.Thread(target=query_historical_async, args=(user_id, start_date, end_date))
             thread.daemon = True
@@ -518,7 +568,7 @@ def handle_message(event):
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 10000))
-    print(f"🚀 啟動服務 (時間戳記已修正)")
+    print(f"🚀 啟動服務 (詳細 Logs 版)")
     print(f"   API Key: {API_KEY[:10] if API_KEY else '未設定'}...")
     print(f"   Station ID: {STATION_ID}")
     app.run(host='0.0.0.0', port=port, debug=False)
